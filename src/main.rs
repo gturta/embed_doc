@@ -1,9 +1,30 @@
-mod error;
-use error::AppError;
 use reqwest::{Client, StatusCode};
 use base64::prelude::*;
 use serde::{Serialize, Deserialize};
 use tokio::time::{Duration, sleep};
+use clap::{Parser,Subcommand};
+
+mod error;
+use error::AppError;
+
+#[derive(Parser)]
+#[command(about)]
+struct Cli{
+    #[command(subcommand)]
+    command: CliCommand,
+}
+#[derive(Subcommand)]
+enum CliCommand{
+    /// Extract metadata from input file, write it to output file
+    Extract{
+        /// Input file
+        #[arg(short, long)]
+        input: String,
+        /// Output file
+        #[arg(short, long)]
+        output: String,
+    }
+}
 
 struct AzureConfig {
     uri: String,
@@ -14,13 +35,13 @@ struct AzureConfig {
 
 #[tokio::main]
 async fn main() {
-    let mut args = std::env::args();
-    //skip prog name
-    let _ = args.next();
-    //get input file
-    let input = args.next().expect("input file should be provided as first param");
-    //get output file
-    let output = args.next().expect("output file should be provided as second param");
+    let cli = Cli::parse();
+    match cli.command {
+        CliCommand::Extract { input, output } => extract(input, output).await,
+    };
+}
+
+async fn extract(input: String, output: String) {
     //get azure config
     let config = get_azure_config();
     //extract markdown
@@ -38,11 +59,21 @@ async fn main() {
             return;
         }
     };
-    //serialize as json
-    let json_result = serde_json::to_string(&analyze_result).expect("analysis result should be serializable!!!");
     //write result to output file
-    std::fs::write(output, json_result).expect("could not write markdown to output file");
+    match write_to_output(output, analyze_result){
+        Ok(()) => {},
+        Err(error) => {
+            eprintln!("Error writing result to output file: {}", error);
+        },
+    };
+}
+
+fn write_to_output(output: String, result: AnalyzeResult) -> Result<(), AppError> {
+    //serialize as json
+    let json_result = serde_json::to_string(&result)?;
+    std::fs::write(output, json_result)?;
     println!("Done, output file written. Bye!");
+    Ok(())
 }
 
 fn get_azure_config() -> AzureConfig {
