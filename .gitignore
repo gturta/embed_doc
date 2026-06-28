@@ -1,3 +1,4 @@
 /target
 settings.env
 staging/
+.DS_Store
