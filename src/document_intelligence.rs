@@ -14,14 +14,14 @@ pub struct DIAnalyzeHandle {
     location: String,
     retry: u32,
 }
-#[derive(Deserialize)]
-struct AzureResponse {
-    status: String,
+#[derive(Deserialize, Serialize)]
+pub struct AnalyzeOperation {
+    pub status: String,
     error: Option<AzureError>,
     #[serde(rename="analyzeResult")]
-    analyze_result: Option<AnalyzeResult>,
+    pub analyze_result: Option<AnalyzeResult>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct AzureError{
     code: String,
     message: String,
@@ -33,9 +33,23 @@ pub struct AnalyzeResult{
     #[serde(rename="stringIndexType")]
     string_index_type: String,
     pub content: String,
-    pub pages: Vec<DocumentPage>,
-    pub paragraphs: Vec<DocumentParagraph>,
-    pub tables: Vec<DocumentTable>,
+    figures: Vec<DocumentFigure>,
+    pages: Vec<DocumentPage>,
+    paragraphs: Vec<DocumentParagraph>,
+    tables: Vec<DocumentTable>,
+}
+#[derive(Deserialize, Serialize)]
+pub struct DocumentFigure{
+    id: Option<String>,
+    caption: Option<DocumentCaption>,
+    elements: Option<Vec<String>>,
+    spans: Vec<Span>,
+}
+#[derive(Deserialize, Serialize)]
+pub struct DocumentCaption{
+    content: String,
+    elements: Vec<String>,
+    spans: Vec<Span>,
 }
 #[derive(Deserialize, Serialize)]
 pub struct DocumentPage{
@@ -104,12 +118,13 @@ pub async fn send_file_to_analyze(input: String, azure: &AzureConfig) -> Result<
 }
 
 pub async fn get_analyze_result(handle: DIAnalyzeHandle, azure: &AzureConfig) -> Result<AnalyzeResult, AppError> {
+    let mut sleep_secs = handle.retry;
     for i in 0..3 {
-        sleep(Duration::from_secs(handle.retry as u64)).await;
+        sleep(Duration::from_secs(sleep_secs as u64)).await;
         let response = azure.client.get(handle.location.clone())
             .header("Ocp-Apim-Subscription-Key", azure.key.clone())
             .send().await?;
-        let response = response.json::<AzureResponse>().await?;
+        let response = response.json::<AnalyzeOperation>().await?;
         match response.status.as_str() {
             "succeeded" => {
                 if let Some(result) = response.analyze_result {
@@ -119,7 +134,8 @@ pub async fn get_analyze_result(handle: DIAnalyzeHandle, azure: &AzureConfig) ->
                 }
             },
             "notStarted" | "running" => {
-                eprintln!("Cycle {}: operation not started or still running", i);
+                sleep_secs *= 2;
+                eprintln!("Cycle {}: operation not started or still running, sleep again for {}s", i, sleep_secs);
             },
             "failed" => {
                 if let Some(error) = response.error {
