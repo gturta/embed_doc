@@ -5,7 +5,7 @@ use std::io::{BufWriter, Write};
 mod error;
 use error::AppError;
 mod document_intelligence;
-use crate::document_intelligence::{AnalyzeResult, AnalyzeOperation};
+use crate::document_intelligence::AnalyzeResult;
 
 #[derive(Parser)]
 #[command(about)]
@@ -109,14 +109,11 @@ fn get_azure_config() -> AzureConfig {
 fn process(input: String, output: String) {
     //read input file
     let input_str = std::fs::read_to_string(&input).expect("Input file should be readable");
-    let op: AnalyzeOperation = serde_json::from_str(&input_str).expect("Input file should contain a AnalyzeOperation instance");
-    //write markdown
-    if let Some(mut result) = op.analyze_result {
-        let file = std::fs::File::create(output).expect("Ouput file shold be writable");
-        let mut writer = BufWriter::new(file);
-        let tree = document_intelligence::tree_from_analyze_result(&mut result).expect("could not parse doc tree");
-        write!(writer, "{}", tree).expect("could not write tree to file");
-    }
+    let mut result: AnalyzeResult = serde_json::from_str(&input_str).expect("Input file should contain a AnalyzeResult instance");
+    let file = std::fs::File::create(output).expect("Ouput file shold be writable");
+    let mut writer = BufWriter::new(file);
+    let tree = document_intelligence::tree_from_analyze_result(&mut result).expect("could not parse doc tree");
+    write!(writer, "{}", tree).expect("could not write tree to file");
 }
 
 
