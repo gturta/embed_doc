@@ -17,19 +17,28 @@ struct Cli{
 enum CliCommand{
     /// Extract metadata from input file, write it to output file
     Extract{
-        /// Input file
+        /// Input file (pdf)
         #[arg(short, long)]
         input: String,
-        /// Output file
+        /// Output file (json with Document Intellingence AnalyzeResult)
         #[arg(short, long)]
         output: String,
     },
     /// Process Document Intelligence result
     Process{
-        /// Input file (AnalyzeOperation json)
+        /// Input file (AnalyzeResult json)
         #[arg(short, long)]
         input: String,
         /// Output file (chunked markdown)
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Dump raw content of AnalyzeResult into output file
+    DumpContent{
+        /// Input file (AnalyzeResult json)
+        #[arg(short, long)]
+        input: String,
+        /// Output file (markdown)
         #[arg(short, long)]
         output: String,
     },
@@ -48,6 +57,7 @@ async fn main() {
     match cli.command {
         CliCommand::Extract { input, output } => extract(input, output).await,
         CliCommand::Process { input, output } => process(input, output),
+        CliCommand::DumpContent { input, output } => extract_raw_content(input, output),
     };
 }
 
@@ -116,4 +126,13 @@ fn process(input: String, output: String) {
     write!(writer, "{}", tree).expect("could not write tree to file");
 }
 
+
+fn extract_raw_content(input: String, output: String) {
+    //read input file
+    let input_str = std::fs::read_to_string(&input).expect("Input file should be readable");
+    let result: AnalyzeResult = serde_json::from_str(&input_str).expect("Input file should contain a AnalyzeResult instance");
+    let file = std::fs::File::create(output).expect("Ouput file shold be writable");
+    let mut writer = BufWriter::new(file);
+    write!(writer, "{}", result.content).expect("could not write content to file");
+}
 
