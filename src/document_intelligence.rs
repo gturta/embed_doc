@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use reqwest::{Client, StatusCode};
 use base64::prelude::*;
 use serde::{Serialize, Deserialize};
@@ -120,6 +121,10 @@ impl Analyzer{
             utf16_content: Vec::new(),
         }
     }
+    fn set_result(&mut self, result: AnalyzeResult) {
+        self.utf16_content = result.content.encode_utf16().collect();
+        self.analyze_result = Some(result);
+    }
 
     pub async fn send_file_to_analyze(&mut self, input: String) -> Result<(), AppError> {
         //read input and make b64
@@ -176,8 +181,7 @@ impl Analyzer{
             match response.status.as_str() {
                 "succeeded" => {
                     if let Some(result) = response.analyze_result {
-                        self.utf16_content = result.content.encode_utf16().collect();
-                        self.analyze_result = Some(result);
+                        self.set_result(result);
                         return Ok(());
                     }else {
                         return Err(AppError::Azure("Operation succeeded but no result fetched".to_string()));
@@ -302,9 +306,11 @@ impl Analyzer{
         Ok(analyze.content.clone())
     }
     pub fn results_from_str(&mut self, input_str: String) -> Result<(), AppError> {
-        self.analyze_result = serde_json::from_str(&input_str)?;
+        self.set_result(serde_json::from_str(&input_str)?);
         Ok(())
     }
+
+
 }
 
 enum TreeElement{
@@ -326,13 +332,13 @@ struct TreeParagraph{
     role: Option<ParagraphRole>,
 }
 
-impl std::fmt::Display for DocTree{
+impl Display for DocTree{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.root) 
     }
 }
 
-impl std::fmt::Display for TreeElement{
+impl Display for TreeElement{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self{
             TreeElement::Paragraph(paragraph) => {
@@ -351,6 +357,98 @@ impl std::fmt::Display for TreeElement{
                 Ok(())
             },
         }
+    }
+}
+
+impl TreeElement{
+    pub fn len(&self) -> usize {
+        match self {
+            TreeElement::Section(section) => {
+                let mut size = 0;
+                for e in &section.children {
+                    size += e.len();
+                }
+                size
+            },
+            TreeElement::Paragraph(paragraph) => paragraph.content.len(),
+            TreeElement::Table(table) => table.len(),
+            TreeElement::Figure(figure) => figure.len(),
+        }
+    }
+}
+
+pub struct Chunks{
+    chunk_size: usize,
+    items: Vec<Chunk>,
+}
+
+impl Display for Chunks {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for item in &self.items { write!(f, "{item}")?; }
+        Ok(())
+    }
+}
+impl Chunks{
+    pub fn new(size: usize) -> Self {
+        Chunks{chunk_size: size, items: Vec::new()}
+    }
+    pub fn push(&mut self, item: Chunk){
+        self.items.push(item);
+    }
+}
+
+#[derive(Default)]
+pub struct Chunk{
+    text: String,
+}
+impl Display for Chunk{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "\nCHUNK--->\n{}\n<---CHUNK\n", &self.text)
+    }
+}
+impl Chunk{
+    pub fn len(&self) -> usize {
+        self.text.len()
+    }
+    fn add(&mut self, elem: &TreeElement) {
+        //TODO: do a better add
+        self.text.push_str(&format!("{}", elem));
+    }
+}
+
+impl DocTree {
+    pub fn generate_chunks(&self, chunk_size: usize) -> Result<Chunks, AppError> {
+        let mut chunks = Chunks::new(chunk_size);
+        let mut current = Chunk::default();
+        
+        // recursively chunk each element
+        Self::chunk_element(&self.root, &mut current, &mut chunks);
+        // current might have last chunks, push it to chunks
+        chunks.push(current);
+
+        Ok(chunks)
+    }
+
+    fn chunk_element(element: &TreeElement, current: &mut Chunk, chunks: &mut Chunks) {
+        // 1. if sizeof element + sizeof current <= chunk_size => add element to current, return
+        if element.len() + current.len() <= chunks.chunk_size {
+            current.add(element);
+            return;
+        }
+        // 2. push and empty current to chunks
+        chunks.push(std::mem::take(current));
+        match element {
+            // 3. if simple element add element to chunk, return
+            TreeElement::Paragraph(_) 
+                | TreeElement::Table(_) 
+                | TreeElement::Figure(_) => current.add(element),
+            // 4. if section recurse for each child
+            TreeElement::Section(section) => {
+                for child in &section.children {
+                    Self::chunk_element(child, current, chunks);
+                }
+            },
+        };
     }
 }
 

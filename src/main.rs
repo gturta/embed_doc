@@ -23,12 +23,12 @@ enum CliCommand{
         #[arg(short, long)]
         output: String,
     },
-    /// Process Document Intelligence result
-    Process{
+    /// Dump DocTree to file
+    DumpTree{
         /// Input file (AnalyzeResult json)
         #[arg(short, long)]
         input: String,
-        /// Output file (chunked markdown)
+        /// Output file (DocTree)
         #[arg(short, long)]
         output: String,
     },
@@ -38,6 +38,15 @@ enum CliCommand{
         #[arg(short, long)]
         input: String,
         /// Output file (markdown)
+        #[arg(short, long)]
+        output: String,
+    },
+    /// Extract chunks from AnalyzeResult, write to output
+    Process{
+        /// Input file (AnalyzeResult json)
+        #[arg(short, long)]
+        input: String,
+        /// Output file (processed chunks)
         #[arg(short, long)]
         output: String,
     },
@@ -54,8 +63,9 @@ async fn main() {
     let cli = Cli::parse();
     match cli.command {
         CliCommand::Extract { input, output } => extract(input, output).await,
-        CliCommand::Process { input, output } => process(input, output),
+        CliCommand::DumpTree { input, output } => dump_tree_to_file(input, output),
         CliCommand::DumpContent { input, output } => extract_raw_content(input, output),
+        CliCommand::Process{ input, output } => process(input, output),
     };
 }
 
@@ -112,7 +122,7 @@ fn get_azure_config() -> AzureConfig {
 }
 
 
-fn process(input: String, output: String) {
+fn dump_tree_to_file(input: String, output: String) {
      //get azure config
     let config = get_azure_config();
     //extract markdown
@@ -140,3 +150,23 @@ fn extract_raw_content(input: String, output: String) {
     write!(writer, "{}", analyzer.get_raw_content().unwrap()).expect("could not write content to file");
 }
 
+fn process(input: String, output: String) {
+     //get azure config
+    let config = get_azure_config();
+    //extract markdown
+    let mut analyzer = document_intelligence::Analyzer::new(&config);
+    //read input file
+    let input_str = std::fs::read_to_string(&input).expect("Input file should be readable");
+    analyzer.results_from_str(input_str).expect("could not load results from string");
+    let file = std::fs::File::create(output).expect("Ouput file shold be writable");
+    let mut writer = BufWriter::new(file);
+    let tree = match analyzer.tree_from_analyze_result() {
+        Ok(tree) => tree,
+        Err(err) => panic!("Could not generate tree from results: {}", err),
+    };
+    let chunks = match tree.generate_chunks(800){
+        Ok(chunks) => chunks,
+        Err(err) => panic!("Could not generate chunks from tree: {}", err),
+    };
+    write!(writer, "{}", chunks).expect("could not write tree to file");
+}
