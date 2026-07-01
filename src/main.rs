@@ -1,11 +1,10 @@
-use reqwest::Client;
 use clap::{Parser,Subcommand};
 use std::io::{BufWriter, Write};
 
 mod error;
 use error::AppError;
 mod document_intelligence;
-use crate::document_intelligence::AnalyzeResult;
+use crate::document_intelligence::Analyzer;
 
 #[derive(Parser)]
 #[command(about)]
@@ -48,7 +47,6 @@ pub struct AzureConfig {
     uri: String,
     key: String,
     model: String,
-    client: Client,
 }
 
 #[tokio::main]
@@ -65,20 +63,19 @@ async fn extract(input: String, output: String) {
     //get azure config
     let config = get_azure_config();
     //extract markdown
-    let analyze = match document_intelligence::send_file_to_analyze(input, &config).await{
-        Ok(markdown) => {
+    let mut analyzer = document_intelligence::Analyzer::new(&config);
+    match analyzer.send_file_to_analyze(input).await{
+        Ok(()) => {
             eprintln!("File sent succesfully to Document Intelligence");
-            markdown
         },
         Err(error) => {
             eprintln!("Error sending file to document intelligence: {}", error);
             return;
         }
     };
-    let analyze_result = match document_intelligence::get_analyze_result(analyze, &config).await {
-        Ok(result) => {
+    match analyzer.retrieve_analyze_result().await {
+        Ok(()) => {
             eprintln!("Analyze result succeeded.");
-            result
         },
         Err(error) => {
             eprintln!("Error getting document intelligence results: {}", error);
@@ -86,7 +83,7 @@ async fn extract(input: String, output: String) {
         }
     };
     //write result to output file
-    match write_to_output(output, analyze_result){
+    match write_to_output(output, analyzer){
         Ok(()) => {
             eprintln!("Analyze result written to file.");
         },
@@ -96,9 +93,9 @@ async fn extract(input: String, output: String) {
     };
 }
 
-fn write_to_output(output: String, result: AnalyzeResult) -> Result<(), AppError> {
+fn write_to_output(output: String, result: Analyzer) -> Result<(), AppError> {
     //serialize as json
-    let json_result = serde_json::to_string_pretty(&result)?;
+    let json_result = result.get_raw_json()?;
     Ok(std::fs::write(output, json_result)?)
 }
 
@@ -111,28 +108,35 @@ fn get_azure_config() -> AzureConfig {
         uri: azure_uri,
         key: azure_key,
         model: azure_model,
-        client: Client::new(),
     }
 }
 
 
 fn process(input: String, output: String) {
+     //get azure config
+    let config = get_azure_config();
+    //extract markdown
+    let mut analyzer = document_intelligence::Analyzer::new(&config);
     //read input file
     let input_str = std::fs::read_to_string(&input).expect("Input file should be readable");
-    let mut result: AnalyzeResult = serde_json::from_str(&input_str).expect("Input file should contain a AnalyzeResult instance");
+    analyzer.results_from_str(input_str).expect("could not load results from string");
     let file = std::fs::File::create(output).expect("Ouput file shold be writable");
     let mut writer = BufWriter::new(file);
-    let tree = document_intelligence::tree_from_analyze_result(&mut result).expect("could not parse doc tree");
+    let tree = analyzer.tree_from_analyze_result().expect("could not parse doc tree");
     write!(writer, "{}", tree).expect("could not write tree to file");
 }
 
 
 fn extract_raw_content(input: String, output: String) {
+     //get azure config
+    let config = get_azure_config();
+    //extract markdown
+    let mut analyzer = document_intelligence::Analyzer::new(&config);
     //read input file
     let input_str = std::fs::read_to_string(&input).expect("Input file should be readable");
-    let result: AnalyzeResult = serde_json::from_str(&input_str).expect("Input file should contain a AnalyzeResult instance");
+    analyzer.results_from_str(input_str).expect("could not load results from string");
     let file = std::fs::File::create(output).expect("Ouput file shold be writable");
     let mut writer = BufWriter::new(file);
-    write!(writer, "{}", result.content).expect("could not write content to file");
+    write!(writer, "{}", analyzer.get_raw_content().unwrap()).expect("could not write content to file");
 }
 
