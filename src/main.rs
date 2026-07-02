@@ -2,9 +2,8 @@ use clap::{Parser,Subcommand};
 use std::io::{BufWriter, Write};
 
 mod error;
-use error::AppError;
 mod document_intelligence;
-use crate::document_intelligence::{Analyzer, TreeChunker};
+use crate::document_intelligence::TreeChunker;
 
 #[derive(Parser)]
 #[command(about)]

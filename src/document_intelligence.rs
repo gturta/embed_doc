@@ -379,37 +379,55 @@ impl TreeElement{
 
 #[derive(Default)]
 pub struct Chunk{
-    text: String,
+    fragments: Vec<ChunkFragment>,
 }
+struct ChunkFragment{
+    text: String,
+    crumbs: FragmentCrumbs,
+}
+#[derive(Default, Clone, PartialEq)]
+struct FragmentCrumbs{
+    h1: String,
+    h2: String,
+    h3: String,
+}
+
 impl Display for Chunk{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "\nCHUNK:\n---\n{}\n", &self.text)
+        write!(f, "\nCHUNK:\n---\n")?;
+        //store last written crumbs
+        let mut last_crumbs = FragmentCrumbs::default();
+        for frag in &self.fragments {
+            if frag.crumbs != last_crumbs{
+                writeln!(f, "\n{} > {} > {}\n",frag.crumbs.h1,frag.crumbs.h2,frag.crumbs.h3)?;
+                last_crumbs = frag.crumbs.clone();
+            }
+            writeln!(f, "{}", frag.text)?;
+        }
+        Ok(())
     }
 }
 impl Chunk{
     pub fn len(&self) -> usize {
-        self.text.len()
+        let mut size = 0;
+        for frag in &self.fragments {
+            // don't know how many crumbs will be outputed so don't count them
+            size += frag.text.len();
+        }
+        size
     }
 }
+#[derive(Default)]
 pub struct TreeChunker {
     current: Chunk,
     chunks: Vec<Chunk>,
     max_size: usize,
-    current_title: String,
-    current_header: String,
-    breadcrumbs_changed: bool,
+    current_crumbs: FragmentCrumbs,
 }
 
 impl TreeChunker {
     pub fn new(max_size: usize) -> Self {
-        Self {
-            current: Chunk::default(),
-            chunks: Vec::new(),
-            max_size,
-            current_title: String::new(),
-            current_header: String::new(),
-            breadcrumbs_changed: false,
-        }
+        Self { max_size, ..Default::default() }
     }
     pub fn generate_chunks(&mut self, tree: &DocTree) {
         // recursively chunk each element
@@ -424,9 +442,9 @@ impl TreeChunker {
         if element.len() + self.current.len() <= self.max_size {
             match element {
                 // 3. if simple element add element to chunk, return
-                TreeElement::Paragraph(para) => self.add_paragraph_chunk(para),
-                TreeElement::Table(table) => self.add_table_chunk(table),
-                TreeElement::Figure(figure) => self.add_figure_chunk(figure),
+                TreeElement::Paragraph(para) => self.add_paragraph_to_chunk(para),
+                TreeElement::Table(table) => self.add_string_to_chunk(table),
+                TreeElement::Figure(figure) => self.add_string_to_chunk(figure),
                 // 4. if section: recurse for each child
                 TreeElement::Section(section) => {
                     for child in &section.children {
@@ -438,13 +456,11 @@ impl TreeChunker {
         }
         // 2. push current and start new chunk
         self.chunks.push(std::mem::take(&mut self.current));
-        // also signal we want breadcrumbs for the new chunk (not a great design)
-        self.breadcrumbs_changed = true;
         match element {
             // 3. if simple element add element to chunk, return
-            TreeElement::Paragraph(para) => self.add_paragraph_chunk(para),
-                TreeElement::Table(table) => self.add_table_chunk(table),
-                TreeElement::Figure(figure) => self.add_figure_chunk(figure),
+            TreeElement::Paragraph(para) => self.add_paragraph_to_chunk(para),
+            TreeElement::Table(table) => self.add_string_to_chunk(table),
+            TreeElement::Figure(figure) => self.add_string_to_chunk(figure),
             // 4. if section: recurse for each child
             TreeElement::Section(section) => {
                 for child in &section.children {
@@ -454,54 +470,48 @@ impl TreeChunker {
         };
     }
 
-    fn add_paragraph_chunk(&mut self, para: &TreeParagraph) {
+    fn add_paragraph_to_chunk(&mut self, para: &TreeParagraph) {
         //check for title/header, to set in breadcrumbs
         if let Some(role) = &para.role {
             match role {
-                ParagraphRole::Title => self.set_breadcrumb_title(&para.content),
-                ParagraphRole::SectionHeading => self.set_breadcrumb_header(&para.content),
+                ParagraphRole::Title => {
+                    // count number of '#' to see level of heading
+                    let level = para.content.chars().take_while(|c| *c == '#').count();
+                    match level {
+                        0 | 1 => {
+                            self.current_crumbs.h1 = para.content[level..].to_string();
+                            //reset lower headings on change of h1
+                            (self.current_crumbs.h2, self.current_crumbs.h3) = (String::new(), String::new());
+                        },
+                        2.. => {
+                            self.current_crumbs.h2 = para.content[level..].to_string();
+                            //reset lower headings on change of h2
+                            self.current_crumbs.h3 = String::new();
+                        }
+                    }
+                },
+                ParagraphRole::SectionHeading => {
+                    // count number of '#' to see level of heading - use it just for stripping here
+                    let level = para.content.chars().take_while(|c| *c == '#').count();
+                    self.current_crumbs.h3 = para.content[level..].to_string();
+                },
                 _ => {},
             }
-        } else {
-            self.add_breadcrumbs();
         }
-        self.current.text.push_str(&para.content);
+        self.current.fragments.push(ChunkFragment{
+            text: para.content.trim().to_string(),
+            crumbs: self.current_crumbs.clone(),
+        });
     }
 
-    fn add_table_chunk(&mut self, table: &str) {
-        self.add_breadcrumbs();
-        self.current.text.push_str(table);
+
+    fn add_string_to_chunk(&mut self, input: &str) {
+        self.current.fragments.push(ChunkFragment{
+            text: input.trim().to_string(),
+            crumbs: self.current_crumbs.clone(),
+        });
     }
 
-    fn add_figure_chunk(&mut self, table: &str) {
-        self.add_breadcrumbs();
-        self.current.text.push_str(table);
-    }
-
-    fn add_breadcrumbs(&mut self) {
-        let mut breadcrumbs = String::new();
-        if self.breadcrumbs_changed {
-            if !self.current_title.is_empty() {
-                breadcrumbs.push_str(&format!("\nbreadcrumbs: >{}", self.current_title));
-                if !self.current_header.is_empty() {
-                    breadcrumbs.push_str(&format!(">>{}", self.current_header));
-                }
-                self.current.text.push_str(&format!("{breadcrumbs}\n\n"));
-            }
-            self.breadcrumbs_changed = false;
-        }
-    }
-
-    fn set_breadcrumb_title(&mut self, title: &str) {
-        self.current_title = title.to_string();
-        self.current_header.clear();
-        self.breadcrumbs_changed = true;
-    }
-
-    fn set_breadcrumb_header(&mut self, header: &str) {
-        self.current_header = header.to_string();
-        self.breadcrumbs_changed = true;
-    }
 
     pub fn chunks(self) -> Vec<Chunk> {
         self.chunks
