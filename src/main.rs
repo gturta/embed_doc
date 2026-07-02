@@ -4,7 +4,7 @@ use std::io::{BufWriter, Write};
 mod error;
 use error::AppError;
 mod document_intelligence;
-use crate::document_intelligence::Analyzer;
+use crate::document_intelligence::{Analyzer, TreeChunker};
 
 #[derive(Parser)]
 #[command(about)]
@@ -51,7 +51,7 @@ enum CliCommand{
         output: String,
     },
 }
-
+#[derive(Default)]
 pub struct AzureConfig {
     uri: String,
     key: String,
@@ -93,20 +93,8 @@ async fn extract(input: String, output: String) {
         }
     };
     //write result to output file
-    match write_to_output(output, analyzer){
-        Ok(()) => {
-            eprintln!("Analyze result written to file.");
-        },
-        Err(error) => {
-            eprintln!("Error writing result to output file: {}", error);
-        },
-    };
-}
-
-fn write_to_output(output: String, result: Analyzer) -> Result<(), AppError> {
-    //serialize as json
-    let json_result = result.get_raw_json()?;
-    Ok(std::fs::write(output, json_result)?)
+    let json_result = analyzer.get_raw_json().expect("could not get raw json");
+    std::fs::write(output, json_result).expect("Error writing result to output file");
 }
 
 fn get_azure_config() -> AzureConfig {
@@ -123,10 +111,7 @@ fn get_azure_config() -> AzureConfig {
 
 
 fn dump_tree_to_file(input: String, output: String) {
-     //get azure config
-    let config = get_azure_config();
-    //extract markdown
-    let mut analyzer = document_intelligence::Analyzer::new(&config);
+    let mut analyzer = document_intelligence::Analyzer::new(&AzureConfig::default());
     //read input file
     let input_str = std::fs::read_to_string(&input).expect("Input file should be readable");
     analyzer.results_from_str(input_str).expect("could not load results from string");
@@ -138,10 +123,7 @@ fn dump_tree_to_file(input: String, output: String) {
 
 
 fn extract_raw_content(input: String, output: String) {
-     //get azure config
-    let config = get_azure_config();
-    //extract markdown
-    let mut analyzer = document_intelligence::Analyzer::new(&config);
+    let mut analyzer = document_intelligence::Analyzer::new(&AzureConfig::default());
     //read input file
     let input_str = std::fs::read_to_string(&input).expect("Input file should be readable");
     analyzer.results_from_str(input_str).expect("could not load results from string");
@@ -151,10 +133,7 @@ fn extract_raw_content(input: String, output: String) {
 }
 
 fn process(input: String, output: String) {
-     //get azure config
-    let config = get_azure_config();
-    //extract markdown
-    let mut analyzer = document_intelligence::Analyzer::new(&config);
+    let mut analyzer = document_intelligence::Analyzer::new(&AzureConfig::default());
     //read input file
     let input_str = std::fs::read_to_string(&input).expect("Input file should be readable");
     analyzer.results_from_str(input_str).expect("could not load results from string");
@@ -164,9 +143,10 @@ fn process(input: String, output: String) {
         Ok(tree) => tree,
         Err(err) => panic!("Could not generate tree from results: {}", err),
     };
-    let chunks = match tree.generate_chunks(800){
-        Ok(chunks) => chunks,
-        Err(err) => panic!("Could not generate chunks from tree: {}", err),
-    };
-    write!(writer, "{}", chunks).expect("could not write tree to file");
+    let mut chunker = TreeChunker::new(800);
+    chunker.generate_chunks(&tree);
+    let chunks = chunker.chunks();
+    for chunk in chunks {
+        write!(writer, "{}", chunk).expect("could not write tree to file");
+    }
 }

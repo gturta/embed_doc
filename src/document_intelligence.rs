@@ -78,7 +78,7 @@ struct DocumentParagraph{
     role: Option<ParagraphRole>,
     spans: Vec<Span>,
 }
-#[derive(Deserialize, Serialize, Clone)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 enum ParagraphRole{
     #[serde(rename="pageHeader")]
     PageHeader,
@@ -295,9 +295,9 @@ impl Analyzer{
 
     pub fn get_raw_json(&self) -> Result<String, AppError> {
         let Some(analyze) = &self.analyze_result else {
-            return Err(AppError::Azure("No analyze rezult available to generate tree".to_string()));
+            return Err(AppError::Azure("No analyze rezult available".to_string()));
         };
-        Ok(serde_json::to_string_pretty(&analyze.content)?)
+        Ok(serde_json::to_string_pretty(&analyze)?)
     }
     pub fn get_raw_content(&self) -> Result<String, AppError> {
         let Some(analyze) = &self.analyze_result else {
@@ -342,13 +342,13 @@ impl Display for TreeElement{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self{
             TreeElement::Paragraph(paragraph) => {
-                write!(f, "<PARAGRAPH>\n{}\n</PARAGRAPH>\n", paragraph.content)
+                write!(f, "<PARAGRAPH>\n{}\n</PARAGRAPH>\n", paragraph.content.trim())
             },
             TreeElement::Table(table) => {
-                writeln!(f, "<TABLE>\n{}\n</TABLE>\n", table)
+                writeln!(f, "<TABLE>\n{}\n</TABLE>\n", table.trim())
             },
             TreeElement::Figure(figure) => {
-                write!(f, "<FIGURE>\n{}\n</FIGURE>\n", figure)
+                write!(f, "<FIGURE>\n{}\n</FIGURE>\n", figure.trim())
             },
             TreeElement::Section(node) => {
                 for child in &node.children {
@@ -370,30 +370,10 @@ impl TreeElement{
                 }
                 size
             },
-            TreeElement::Paragraph(paragraph) => paragraph.content.len(),
-            TreeElement::Table(table) => table.len(),
-            TreeElement::Figure(figure) => figure.len(),
+            TreeElement::Paragraph(paragraph) => paragraph.content.trim().len(),
+            TreeElement::Table(table) => table.trim().len(),
+            TreeElement::Figure(figure) => figure.trim().len(),
         }
-    }
-}
-
-pub struct Chunks{
-    chunk_size: usize,
-    items: Vec<Chunk>,
-}
-
-impl Display for Chunks {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for item in &self.items { write!(f, "{item}")?; }
-        Ok(())
-    }
-}
-impl Chunks{
-    pub fn new(size: usize) -> Self {
-        Chunks{chunk_size: size, items: Vec::new()}
-    }
-    pub fn push(&mut self, item: Chunk){
-        self.items.push(item);
     }
 }
 
@@ -403,52 +383,128 @@ pub struct Chunk{
 }
 impl Display for Chunk{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "\nCHUNK--->\n{}\n<---CHUNK\n", &self.text)
+        write!(f, "\nCHUNK:\n---\n{}\n", &self.text)
     }
 }
 impl Chunk{
     pub fn len(&self) -> usize {
         self.text.len()
     }
-    fn add(&mut self, elem: &TreeElement) {
-        //TODO: do a better add
-        self.text.push_str(&format!("{}", elem));
-    }
+}
+pub struct TreeChunker {
+    current: Chunk,
+    chunks: Vec<Chunk>,
+    max_size: usize,
+    current_title: String,
+    current_header: String,
+    breadcrumbs_changed: bool,
 }
 
-impl DocTree {
-    pub fn generate_chunks(&self, chunk_size: usize) -> Result<Chunks, AppError> {
-        let mut chunks = Chunks::new(chunk_size);
-        let mut current = Chunk::default();
-        
+impl TreeChunker {
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            current: Chunk::default(),
+            chunks: Vec::new(),
+            max_size,
+            current_title: String::new(),
+            current_header: String::new(),
+            breadcrumbs_changed: false,
+        }
+    }
+    pub fn generate_chunks(&mut self, tree: &DocTree) {
         // recursively chunk each element
-        Self::chunk_element(&self.root, &mut current, &mut chunks);
+        self.chunk_element(&tree.root);
         // current might have last chunks, push it to chunks
-        chunks.push(current);
-
-        Ok(chunks)
+        self.chunks.push(std::mem::take(&mut self.current));
     }
 
-    fn chunk_element(element: &TreeElement, current: &mut Chunk, chunks: &mut Chunks) {
+    fn chunk_element(&mut self, element: &TreeElement) {
         // 1. if sizeof element + sizeof current <= chunk_size => add element to current, return
-        if element.len() + current.len() <= chunks.chunk_size {
-            current.add(element);
+        if element.len() == 0 {return;}
+        if element.len() + self.current.len() <= self.max_size {
+            match element {
+                // 3. if simple element add element to chunk, return
+                TreeElement::Paragraph(para) => self.add_paragraph_chunk(para),
+                TreeElement::Table(table) => self.add_table_chunk(table),
+                TreeElement::Figure(figure) => self.add_figure_chunk(figure),
+                // 4. if section: recurse for each child
+                TreeElement::Section(section) => {
+                    for child in &section.children {
+                        self.chunk_element(child);
+                    }
+                },
+            };
             return;
         }
-        // 2. push and empty current to chunks
-        chunks.push(std::mem::take(current));
+        // 2. push current and start new chunk
+        self.chunks.push(std::mem::take(&mut self.current));
+        // also signal we want breadcrumbs for the new chunk (not a great design)
+        self.breadcrumbs_changed = true;
         match element {
             // 3. if simple element add element to chunk, return
-            TreeElement::Paragraph(_) 
-                | TreeElement::Table(_) 
-                | TreeElement::Figure(_) => current.add(element),
-            // 4. if section recurse for each child
+            TreeElement::Paragraph(para) => self.add_paragraph_chunk(para),
+                TreeElement::Table(table) => self.add_table_chunk(table),
+                TreeElement::Figure(figure) => self.add_figure_chunk(figure),
+            // 4. if section: recurse for each child
             TreeElement::Section(section) => {
                 for child in &section.children {
-                    Self::chunk_element(child, current, chunks);
+                    self.chunk_element(child);
                 }
             },
         };
+    }
+
+    fn add_paragraph_chunk(&mut self, para: &TreeParagraph) {
+        //check for title/header, to set in breadcrumbs
+        if let Some(role) = &para.role {
+            match role {
+                ParagraphRole::Title => self.set_breadcrumb_title(&para.content),
+                ParagraphRole::SectionHeading => self.set_breadcrumb_header(&para.content),
+                _ => {},
+            }
+        } else {
+            self.add_breadcrumbs();
+        }
+        self.current.text.push_str(&para.content);
+    }
+
+    fn add_table_chunk(&mut self, table: &str) {
+        self.add_breadcrumbs();
+        self.current.text.push_str(table);
+    }
+
+    fn add_figure_chunk(&mut self, table: &str) {
+        self.add_breadcrumbs();
+        self.current.text.push_str(table);
+    }
+
+    fn add_breadcrumbs(&mut self) {
+        let mut breadcrumbs = String::new();
+        if self.breadcrumbs_changed {
+            if !self.current_title.is_empty() {
+                breadcrumbs.push_str(&format!("\nbreadcrumbs: >{}", self.current_title));
+                if !self.current_header.is_empty() {
+                    breadcrumbs.push_str(&format!(">>{}", self.current_header));
+                }
+                self.current.text.push_str(&format!("{breadcrumbs}\n\n"));
+            }
+            self.breadcrumbs_changed = false;
+        }
+    }
+
+    fn set_breadcrumb_title(&mut self, title: &str) {
+        self.current_title = title.to_string();
+        self.current_header.clear();
+        self.breadcrumbs_changed = true;
+    }
+
+    fn set_breadcrumb_header(&mut self, header: &str) {
+        self.current_header = header.to_string();
+        self.breadcrumbs_changed = true;
+    }
+
+    pub fn chunks(self) -> Vec<Chunk> {
+        self.chunks
     }
 }
 
